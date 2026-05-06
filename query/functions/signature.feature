@@ -16,11 +16,12 @@ Feature: Validate Function Signatures Against Definition & Calls
     Given typeql schema query
     """
     define
-    entity person, owns name, owns nationality;
-    entity cat, owns name, owns breed;
+    entity person, owns name, owns weight, owns nationality;
+    entity cat, owns name, owns weight, owns breed;
     attribute name, value string;
-    attribute nationality, value integer;
+    attribute nationality, value string;
     attribute breed, value string;
+    attribute weight, value double;
     """
     Given transaction commits
 
@@ -76,6 +77,46 @@ Feature: Validate Function Signatures Against Definition & Calls
     return { $x };
     """
 
+    Given connection open schema transaction for database: typedb
+    Then typeql schema query; fails with a message containing: "The optionality of the value returned by the function at index '1' does not match that declared in the signature"
+    """
+    define
+    fun the_first_returned_value_is_optional() -> { person, person }:
+    match
+      $x isa person;
+      try { $y isa person; };
+    return { $x, $y };
+    """
+
+
+  Scenario Outline: A function returning the <op> of a stream must declare the corresponding return as optional
+    Given connection open schema transaction for database: typedb
+    Then typeql schema query; fails with a message containing: "The optionality of the value returned by the function at index '0' does not match that declared in the signature"
+    """
+    define
+    fun my_reduce_returns_optional() -> double:
+    match
+      $x isa person, has weight $weight;
+    return <op>($weight);
+    """
+
+    Given connection open schema transaction for database: typedb
+    When typeql schema query
+    """
+    define
+    fun my_reduce_returns_optional() -> double?:
+    match
+      $x isa person, has weight $weight;
+    return <op>($weight);
+    """
+    Then transaction commits
+    Examples:
+      | op     |
+      | min    |
+      | max    |
+      | median |
+      | std    |
+
 
   Scenario: Functions which do not return the specified type fail type-inference
     Given connection open schema transaction for database: typedb
@@ -88,7 +129,7 @@ Feature: Validate Function Signatures Against Definition & Calls
       $cat isa person, has $name;
     return { $cat };
     """
-    Then transaction commits; fails with a message containing: "The types inferred for the return statement of function 'cats_of_name' did not match those declared in the signature. Mismatching index: 0"
+    Then transaction commits; fails with a message containing: "The types inferred for the return statement of function 'cats_of_name' does not match those declared in the signature. Mismatching index: 0"
 
     Given connection open schema transaction for database: typedb
     When typeql schema query
@@ -100,7 +141,7 @@ Feature: Validate Function Signatures Against Definition & Calls
       $cat has $name;
     return { $name };
     """
-    Then transaction commits; fails with a message containing: "The types inferred for the return statement of function 'name_of_cat' did not match those declared in the signature. Mismatching index: 0"
+    Then transaction commits; fails with a message containing: "The types inferred for the return statement of function 'name_of_cat' does not match those declared in the signature. Mismatching index: 0"
 
 
   Scenario: Functions arguments which are inconsistent with the body fail type-inference
@@ -218,4 +259,61 @@ Feature: Validate Function Signatures Against Definition & Calls
       let $name in name_attribute_of_cat($cat);
       $name isa breed;
     """
+
+
+  Scenario: A function call assigning an optional returned value must mark the return as optional
+    Given connection open schema transaction for database: typedb
+    Given typeql schema query
+    """
+    define
+    fun cats_and_their_names() -> { cat, name? }:
+    match
+      $cat isa cat;
+      try { $cat has name $name; };
+    return { $cat, $name };
+    """
+    Given transaction commits
+    Given connection open read transaction for database: typedb
+    Then typeql read query; fails with a message containing: "The variable 'name' is assigned an optional value but not marked with a '?'"
+    """
+    match
+      let $cat, $name in cats_and_their_names();
+    """
+
+    When get answers of typeql read query
+    """
+    match
+      let $cat, $name? in cats_and_their_names();
+    """
+    Then answer size is: 0
+
+
+  Scenario: A variable assigned an optional value by a function call may not be referenced in the same stage
+    Given connection open schema transaction for database: typedb
+    Given typeql schema query
+    """
+    define
+    fun cats_and_their_names() -> { cat, name? }:
+    match
+      $cat isa cat;
+      try { $cat has name $name; };
+    return { $cat, $name };
+    """
+    Given transaction commits
+    Given connection open read transaction for database: typedb
+    Then typeql read query; fails with a message containing: "The variable 'name' is optionally assigned by a function return, and may not be referenced elsewhere in the same stage"
+    """
+    match
+      let $cat, $name? in cats_and_their_names();
+      $p isa person, has name $name;
+    """
+
+    When get answers of typeql read query
+    """
+    match
+      let $cat, $name? in cats_and_their_names();
+    match
+      try { $p isa person, has name $name; };
+    """
+    Then answer size is: 0
 
